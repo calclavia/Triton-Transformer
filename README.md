@@ -17,3 +17,8 @@ Run tests:
 ```
 python -m unittest
 ```
+
+To run test against Fast Transformers, install the following dependency:
+```
+pip install pytorch-fast-transformers
+```
