@@ -56,15 +56,14 @@ def causal_product_bwd_kernel(
     BLOCK_SIZE = meta['BLOCK_SIZE']
 
     pid = tl.program_id(axis=0)
-    matrix_size = length * dim
-    batch_offset = pid * matrix_size
 
     # DxM matrix containing the current state [D, M] matrix
     # FP32 accumulation
     state = tl.zeros((BLOCK_SIZE, BLOCK_SIZE), dtype=tl.float32)
 
-    cur_qk_pos = batch_offset
-    cur_v_pos = batch_offset
+    # Offset by batch size
+    cur_qk_pos = pid * matrix_size * dim
+    cur_v_pos = pid * matrix_size * vdim
 
     # Points to a single row
     dim_ptrs = tl.arange(0, BLOCK_SIZE)
