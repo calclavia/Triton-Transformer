@@ -18,6 +18,11 @@ Run tests:
 python -m unittest
 ```
 
+Run benchmark:
+```
+python -m ttx.attention.benchmark
+```
+
 To run test against Fast Transformers, install the following dependency:
 ```
 pip install pytorch-fast-transformers

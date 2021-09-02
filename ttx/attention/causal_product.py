@@ -98,7 +98,7 @@ def causal_product_triton(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
     assert q.size()[:-1] == v.size()[:-1], (q.size(), v.size())
     batch, length, dim = output.size()
     vdim = v.size(-1)
-    print('Input dim', batch, length, dim, vdim)
+    # print('Input dim', batch, length, dim, vdim)
 
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int]
@@ -109,16 +109,16 @@ def causal_product_triton(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
     #  - each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
     #  - don't forget to pass meta-parameters as keywords arguments
-    print('launched kernel...')
+    # print('launched kernel...')
     block_size = int(2 ** math.ceil(math.log2(max(dim, vdim))))
-    print('block_size', block_size, 'num blocks', batch)
-    print('qk', q, k, torch.matmul(q, k.transpose(-1, -2)))
-    print('v', v)
+    # print('block_size', block_size, 'num blocks', batch)
+    # print('qk', q, k, torch.matmul(q, k.transpose(-1, -2)))
+    # print('v', v)
     causal_product_kernel[grid](
         q, k, v, output, batch, length, dim, vdim,
         num_warps=1,
         BLOCK_SIZE=block_size)
-    print('waiting on output...')
+    # print('waiting on output...')
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
