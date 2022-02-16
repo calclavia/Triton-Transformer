@@ -67,7 +67,7 @@ def causal_product_kernel(
         context = tl.dot(k[:, None], v[None, :])
         state += context
 
-        # Load a single row of Q of shape [dim]
+        # Load a single row of Q of shape [D]
         q = tl.load(q_ptr + qk_row_offsets, mask=qk_mask, other=0)
 
         # Compute output = QKV. [1, M] x [M, D] => [1, D]
@@ -114,9 +114,10 @@ def causal_product_triton(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
     # print('block_size', block_size, 'num blocks', batch)
     # print('qk', q, k, torch.matmul(q, k.transpose(-1, -2)))
     # print('v', v)
+    num_warps = min(max(block_size // 256, 1), 8)
     causal_product_kernel[grid](
         q, k, v, output, batch, length, dim, vdim,
-        num_warps=1,
+        num_warps=num_warps,
         BLOCK_SIZE=block_size)
     # print('waiting on output...')
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
