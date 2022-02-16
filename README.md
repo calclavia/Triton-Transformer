@@ -8,7 +8,7 @@ You must have an NVIDIA GPU in order to run this.
 
 Running in Docker:
 ```
-docker run --gpus=all -v $(pwd):/workspace --rm -it pytorch/pytorch:1.9.0-cuda11.1-cudnn8-devel /bin/bash
+docker run --gpus=all -v $(pwd):/workspace --rm -it pytorch/pytorch:1.10.0-cuda11.3-cudnn8-devel /bin/bash
 
 pip install -r requirements.txt
 ```
