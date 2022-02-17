@@ -8,43 +8,6 @@ import triton
 import triton.language as tl
 
 
-class mRNNCell(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.weight = nn.Parameter(torch.randn(hidden_size))
-
-    def forward(self, input, input_forget, state):
-        # type: (Tensor, Tensor, Tensor) -> Tensor
-
-        # For matmul version: torch.mm(state, self.weight.t())
-        f = torch.sigmoid(
-            input_forget + state * self.weight)
-        # state = forget_gate * state + (1-forget_gate) * input
-        state = state + f * input
-        return state
-
-
-class mRNNLayer(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.cell = mRNNCell(hidden_size)
-
-    def forward(self, x, state):
-        # type: (Tensor, Tensor) -> Tensor
-        outputs = torch.jit.annotate(List[torch.Tensor], [])
-        x = x.transpose(0, 1)
-        for i in range(len(x)):
-            state = self.cell(
-                x[i][:, :self.hidden_size],
-                x[i][:, self.hidden_size:],
-                state
-            )
-            outputs += [state]
-        outputs = torch.stack(outputs, dim=0)
-        outputs = outputs.transpose(0, 1)
-        return outputs
-
 # @triton.autotune(configs=[
 #     triton.Config(meta={'BLOCK_SIZE': 32}, num_warps=2),
 #     triton.Config(meta={'BLOCK_SIZE': 128}, num_warps=4),
@@ -56,7 +19,7 @@ class mRNNLayer(nn.Module):
 
 
 @triton.jit
-def mrnn_kernel(
+def mrnn_fwd_kernel(
     x_ptr,  # [B, L, 2*D]
     state_ptr,  # [B, D]
     weight_ptr,  # [D] Transition matrix
@@ -134,7 +97,7 @@ def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Ten
 
     block_size = 1  # int(2 ** math.ceil(math.log2(dim)))
     num_warps = min(max(block_size // 256, 1), 8)
-    mrnn_kernel[grid](
+    mrnn_fwd_kernel[grid](
         inputs, state, weight, output, batch, length, dim,
         num_warps=num_warps,
         BLOCK_SIZE=block_size
@@ -278,7 +241,7 @@ def mrnn_bwd_triton(
     return output
 
 
-class mRNNTritonFunction(torch.autograd.Function):
+class mRNNFunction(torch.autograd.Function):
     """
     We can implement our own custom autograd Functions by subclassing
     torch.autograd.Function and implementing the forward and backward passes

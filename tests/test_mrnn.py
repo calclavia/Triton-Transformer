@@ -2,8 +2,8 @@ import unittest
 
 import torch
 import torch.nn.functional as F
-from ttx.attention.mrnn import (mrnn_bwd_full, mrnn_fwd_triton, mRNNLayer,
-                                mRNNTritonFunction)
+from ttx.mrnn.mrnn import mRNN
+from ttx.mrnn.triton import mRNNFunction as mRNNFunctionTriton
 
 
 class TestmRNN(unittest.TestCase):
@@ -13,14 +13,14 @@ class TestmRNN(unittest.TestCase):
             for dim in range(4, 128, 16):
                 for l in range(4, 32, 8):
                     print('Testing:', bsz, l, dim)
-                    module = mRNNLayer(dim).to('cuda')
+                    module = mRNN(dim).to('cuda')
 
                     inputs = torch.randn(bsz, l, dim * 2, device='cuda')
                     state = torch.zeros(bsz, dim, device='cuda')
 
                     ref_output = module(inputs, state)
 
-                    triton_output = mRNNTritonFunction.apply(
+                    triton_output = mRNNFunctionTriton.apply(
                         inputs, state, module.cell.weight)
 
                     try:
@@ -39,7 +39,7 @@ class TestmRNN(unittest.TestCase):
             for dim in range(4, 128, 16):
                 for l in range(4, 32, 8):
                     print('test_causal_product_bwd_torch testing:', bsz, l, dim)
-                    module = mRNNLayer(dim).to('cuda')
+                    module = mRNN(dim).to('cuda')
 
                     inputs = torch.randn(
                         bsz, l, dim * 2, device='cuda', requires_grad=True)
@@ -52,7 +52,7 @@ class TestmRNN(unittest.TestCase):
 
                     ref_state_grad, ref_inputs_grad, ref_weight_grad = state.grad, inputs.grad, module.cell.weight.grad
 
-                    triton_output = mRNNTritonFunction.apply(
+                    triton_output = mRNNFunctionTriton.apply(
                         inputs, state, module.cell.weight)
                     triton_output.backward(grad)
 

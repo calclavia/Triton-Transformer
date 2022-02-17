@@ -1,7 +1,7 @@
 import torch
 import triton
 
-from ttx.attention.mrnn import mRNNLayer, mrnn_fwd_triton
+from ttx.mrnn.mrnn import mRNN, mrnn_fwd_triton
 
 
 @triton.testing.perf_report(
@@ -33,7 +33,7 @@ def benchmark(seq_len, provider):
         inputs = torch.randn(bsz, seq_len, dim * 2, device='cuda')
         state = torch.zeros(bsz, dim, device='cuda')
 
-        module = torch.jit.script(mRNNLayer(dim)).to('cuda')
+        module = torch.jit.script(mRNN(dim)).to('cuda')
         if provider == 'torch':
             ms, min_ms, max_ms = triton.testing.do_bench(
                 lambda: module(inputs, state))

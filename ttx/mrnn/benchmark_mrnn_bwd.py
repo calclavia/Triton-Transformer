@@ -1,7 +1,8 @@
 import torch
 import triton
 
-from ttx.attention.mrnn import mRNNLayer, mRNNTritonFunction
+from ttx.mrnn.mrnn import mRNN
+from ttx.mrnn.triton import mRNNFunction
 
 
 @triton.testing.perf_report(
@@ -34,13 +35,13 @@ def benchmark(seq_len, provider):
     state = torch.zeros(bsz, dim, device='cuda', requires_grad=True)
     grad = torch.randn(bsz, seq_len, dim, device='cuda')
 
-    module = torch.jit.script(mRNNLayer(dim)).to('cuda')
+    module = torch.jit.script(mRNN(dim)).to('cuda')
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: module(inputs, state).backward(grad))
 
     if provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: mRNNTritonFunction.apply(
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: mRNNFunction.apply(
             inputs, state, module.cell.weight).backward(grad))
 
     if provider == 'sru':
