@@ -4,9 +4,9 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 import triton
 import triton.language as tl
-
 
 # @triton.autotune(configs=[
 #     triton.Config(meta={'BLOCK_SIZE': 32}, num_warps=2),
@@ -106,57 +106,6 @@ def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Ten
     # We return a handle to z but, since `torch.cuda.synchronize()` hasn't been called, the kernel is still
     # running asynchronously at this point.
     return output
-
-
-def mrnn_bwd_full(inputs, states, weight, grad):
-    """
-    states: [B, L + 1 (first state is the initial state), D]
-    weight: [D]
-    grad: Gradient of loss w.r.t. state
-    """
-    B = inputs.size(0)
-    L = inputs.size(1)
-    D = inputs.size(-1) // 2
-
-    inputs_grad = torch.empty_like(inputs)
-    weight_grad = torch.zeros_like(weight)
-
-    # Precompute certain values
-    x = inputs[..., :D]
-    z = inputs[..., D:]
-    logits = weight * states[:, :-1] + z
-    sigs = torch.sigmoid(logits)
-    sig_sqrds = sigs.pow(2)
-    x_exp_neg_logits = x * torch.exp(-logits)
-
-    state_grad_pre = sig_sqrds * weight * x_exp_neg_logits + 1
-
-    # state_grad = torch.zeros(B, D, device=inputs_grad.device)
-    # recurrent_grads = torch.empty(B, L, D, device=inputs_grad.device)
-
-    # # Highest to lower timestep
-    # for t in range(L - 1, -1, -1):
-    #     recurrent_grads[:, t] = grad[:, t] + state_grad
-    #     # Gradient of s
-    #     state_grad = state_grad_pre[:, t] * recurrent_grads[:, t]
-
-    recurrent_grads = mrnn_bwd_triton(
-        grad.contiguous(),
-        state_grad_pre,
-    )
-
-    state_grad = state_grad_pre[:, 0] * recurrent_grads[:, 0]
-
-    # Gradient of x
-    inputs_grad[..., :D] = sigs * recurrent_grads
-    # Gradient of z
-    inputs_grad[..., D:] = sig_sqrds * \
-        x_exp_neg_logits * recurrent_grads
-    # Gradient of v
-    weight_grad += (sig_sqrds * states[:, :-1] *
-                    x_exp_neg_logits * recurrent_grads).sum(dim=[0, 1])
-
-    return inputs_grad, state_grad, weight_grad
 
 
 @triton.jit
@@ -260,11 +209,51 @@ class mRNNFunction(torch.autograd.Function):
 
         ctx.save_for_backward(
             inputs,
-            torch.cat((state.unsqueeze(1), outputs), dim=1),
+            # All the states (except the final state)
+            torch.cat((state.unsqueeze(1), outputs[:, :-1]), dim=1),
             weight
         )
 
         return outputs
+
+    @staticmethod
+    @torch.jit.script
+    def precompute_grad_components(inputs, states, weight):
+        D = inputs.size(-1) // 2
+        # Precompute certain values
+        x, z = inputs.chunk(2, dim=-1)
+        logits = weight * states + z
+        exp_logits = torch.exp(-logits)
+
+        # sigs = torch.sigmoid(logits)
+        sigs = 1 / (1 + exp_logits)
+        sig_sqrds = sigs.pow(2)
+        x_exp_neg_logits = x * exp_logits
+        state_grad_pre = sig_sqrds * weight * x_exp_neg_logits + 1
+        return sigs, sig_sqrds, x_exp_neg_logits, state_grad_pre
+
+    @staticmethod
+    @torch.jit.script
+    def post_grad_components(
+        states,
+        state_grad_pre,
+        recurrent_grads,
+        sigs,
+        sig_sqrds,
+        x_exp_neg_logits
+    ):
+        state_grad = state_grad_pre[:, 0] * recurrent_grads[:, 0]
+        z_grad = sig_sqrds * x_exp_neg_logits * recurrent_grads
+        inputs_grad = torch.cat((
+            # Gradient of x
+            sigs * recurrent_grads,
+            # Gradient of z
+            z_grad
+        ), dim=-1)
+        # Gradient of v
+        weight_grad = (z_grad * states).sum(dim=[0, 1])
+
+        return inputs_grad, state_grad, weight_grad
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -274,4 +263,50 @@ class mRNNFunction(torch.autograd.Function):
         with respect to the input.
         """
         inputs, states, weight = ctx.saved_tensors
-        return mrnn_bwd_full(inputs, states, weight, grad_output)
+
+        """
+        states: [B, L + 1 (first state is the initial state), D]
+        weight: [D]
+        grad: Gradient of loss w.r.t. state
+        """
+        B = inputs.size(0)
+        L = inputs.size(1)
+        D = inputs.size(-1) // 2
+
+        sigs, sig_sqrds, x_exp_neg_logits, state_grad_pre = mRNNFunction.precompute_grad_components(
+            inputs, states, weight
+        )
+
+        # Torch version
+        # state_grad = torch.zeros(B, D, device=inputs_grad.device)
+        # recurrent_grads = torch.empty(B, L, D, device=inputs_grad.device)
+
+        # # Highest to lower timestep
+        # for t in range(L - 1, -1, -1):
+        #     recurrent_grads[:, t] = grad[:, t] + state_grad
+        #     # Gradient of s
+        #     state_grad = state_grad_pre[:, t] * recurrent_grads[:, t]
+
+        recurrent_grads = mrnn_bwd_triton(
+            grad_output.contiguous(),
+            state_grad_pre,
+        )
+
+        return mRNNFunction.post_grad_components(
+            states,
+            state_grad_pre,
+            recurrent_grads,
+            sigs,
+            sig_sqrds,
+            x_exp_neg_logits
+        )
+
+
+class mRNN(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.weight = nn.Parameter(torch.randn(hidden_size))
+
+    def forward(self, x, state):
+        return mRNNFunction.apply(x, state, self.weight)
