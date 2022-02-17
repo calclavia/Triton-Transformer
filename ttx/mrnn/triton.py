@@ -129,8 +129,8 @@ def mrnn_bwd_kernel(
     vec_mask = dim_ptrs < dim
 
     # D state gradient accumlator
-    # TODO: float16 would be faster?
-    state_grad = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
+    # TODO: Is FP16 safe here?
+    state_grad = tl.zeros((BLOCK_SIZE,), dtype=tl.float16)
 
     # Offset by batch size and dim ID (start at last time step)
     pos = batch_id * length * dim + length * dim + dim_offset
@@ -169,7 +169,8 @@ def mrnn_bwd_triton(
     assert state_grad_pre.is_contiguous()
 
     # We need to preallocate the output
-    output = torch.zeros((batch, length, dim), device=grad.device)
+    output = torch.empty((batch, length, dim),
+                         device=grad.device, dtype=torch.half)
 
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int]
@@ -183,7 +184,8 @@ def mrnn_bwd_triton(
     block_size = 1  # int(2 ** math.ceil(math.log2(dim)))
     num_warps = min(max(block_size // 256, 1), 8)
     mrnn_bwd_kernel[grid](
-        grad, state_grad_pre, output, batch, length, dim,
+        grad.half(), state_grad_pre.half(), output,
+        batch, length, dim,
         num_warps=num_warps,
         BLOCK_SIZE=block_size
     )
@@ -207,6 +209,7 @@ class mRNNFunction(torch.autograd.Function):
         """
         outputs = mrnn_fwd_triton(inputs, state, weight)
 
+        # TODO: Storing all these states leads to O(b*l*d) memory
         ctx.save_for_backward(
             inputs,
             # All the states (except the final state)
@@ -307,6 +310,11 @@ class mRNN(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.weight = nn.Parameter(torch.randn(hidden_size))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.normal_(self.weight.data)
 
     def forward(self, x, state):
         return mRNNFunction.apply(x, state, self.weight)
