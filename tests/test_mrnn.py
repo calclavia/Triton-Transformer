@@ -33,7 +33,7 @@ class TestmRNN(unittest.TestCase):
                         print('triton_output', triton_output)
                         raise e
 
-    def test_causal_product_bwd_torch(self):
+    def test_causal_product_bwd_triton(self):
         torch.manual_seed(10)
         for bsz in range(1, 4):
             for dim in range(4, 128, 16):
@@ -52,10 +52,14 @@ class TestmRNN(unittest.TestCase):
 
                     ref_state_grad, ref_inputs_grad, ref_weight_grad = state.grad, inputs.grad, module.cell.weight.grad
 
+                    # Reset grads
+                    inputs.grad = None
+                    state.grad = None
+                    module.cell.weight.grad = None
+
                     triton_output = mRNNFunctionTriton.apply(
                         inputs, state, module.cell.weight)
                     triton_output.backward(grad)
-
                     state_grad, inputs_grad,  weight_grad = state.grad, inputs.grad, module.cell.weight.grad
 
                     try:
