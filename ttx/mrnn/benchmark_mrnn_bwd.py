@@ -14,11 +14,14 @@ from ttx.mrnn.triton import mRNNFunction
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
-        line_vals=['torch', 'triton', 'sru'],
+        # line_vals=['torch', 'triton', 'sru'],
+        line_vals=['triton', 'sru'],
         # label name for the lines
-        line_names=["TorchScript", "Triton", 'SRU'],
+        # line_names=["TorchScript", "Triton", 'SRU'],
+        line_names=["Triton", 'SRU'],
         # line styles
-        styles=[('green', '-'), ('red', '-'), ('blue', '-')],
+        # styles=[('green', '-'), ('red', '-'), ('blue', '-')],
+        styles=[('red', '-'), ('blue', '-')],
         ylabel="Execution Time (ms)",  # label name for the y-axis
         # name for the plot. Used also as a file name for saving the plot.
         plot_name="forward-backward performance",

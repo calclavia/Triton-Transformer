@@ -1,7 +1,8 @@
 import torch
 import triton
 
-from ttx.mrnn.mrnn import mRNN, mrnn_fwd_triton
+from ttx.mrnn.mrnn import mRNN
+from ttx.mrnn.triton import mRNNFunction
 
 
 @triton.testing.perf_report(
@@ -13,11 +14,14 @@ from ttx.mrnn.mrnn import mRNN, mrnn_fwd_triton
         # argument name whose value corresponds to a different line in the plot
         line_arg='provider',
         # possible values for `line_arg``
-        line_vals=['torch', 'triton', 'sru'],
+        # line_vals=['torch', 'triton', 'sru'],
+        line_vals=['triton', 'sru'],
         # label name for the lines
-        line_names=["TorchScript", "Triton", 'SRU'],
+        # line_names=["TorchScript", "Triton", 'SRU'],
+        line_names=["Triton", 'SRU'],
         # line styles
-        styles=[('green', '-'), ('red', '-'), ('blue', '-')],
+        # styles=[('green', '-'), ('red', '-'), ('blue', '-')],
+        styles=[('red', '-'), ('blue', '-')],
         ylabel="Execution Time (ms)",  # label name for the y-axis
         # name for the plot. Used also as a file name for saving the plot.
         plot_name="performance",
@@ -39,7 +43,7 @@ def benchmark(seq_len, provider):
                 lambda: module(inputs, state))
 
         if provider == 'triton':
-            ms, min_ms, max_ms = triton.testing.do_bench(lambda: mrnn_fwd_triton(
+            ms, min_ms, max_ms = triton.testing.do_bench(lambda: mRNNFunction.apply(
                 inputs, state, module.cell.weight))
 
         if provider == 'sru':

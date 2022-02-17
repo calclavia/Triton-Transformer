@@ -95,7 +95,7 @@ def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Ten
     #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
     #  - don't forget to pass meta-parameters as keywords arguments
 
-    block_size = 1  # int(2 ** math.ceil(math.log2(dim)))
+    block_size = triton.next_power_of_2(dim)
     num_warps = min(max(block_size // 256, 1), 8)
     mrnn_fwd_kernel[grid](
         inputs, state, weight, output, batch, length, dim,
@@ -143,9 +143,10 @@ def mrnn_bwd_kernel(
         offsets = pos + dim_ptrs
 
         # Load single row [D]
-        grad_t = tl.load(grad_ptr + offsets, mask=vec_mask, other=0)
+        grad_t = tl.load(grad_ptr + offsets, mask=vec_mask,
+                         other=0).to(tl.float16)
         state_grad_pre_t = tl.load(
-            state_grad_pre_ptr + offsets, mask=vec_mask, other=0)
+            state_grad_pre_ptr + offsets, mask=vec_mask, other=0).to(tl.float16)
 
         # Compute gradient
         output = grad_t + state_grad
@@ -181,10 +182,10 @@ def mrnn_bwd_triton(
     #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
     #  - don't forget to pass meta-parameters as keywords arguments
 
-    block_size = 1  # int(2 ** math.ceil(math.log2(dim)))
+    block_size = triton.next_power_of_2(dim)
     num_warps = min(max(block_size // 256, 1), 8)
     mrnn_bwd_kernel[grid](
-        grad.half(), state_grad_pre.half(), output,
+        grad, state_grad_pre, output,
         batch, length, dim,
         num_warps=num_warps,
         BLOCK_SIZE=block_size
