@@ -60,7 +60,7 @@ def mrnn_fwd_kernel(
 
         # Apply state transition
         f = tl.sigmoid(x_f + state * W)
-        state += f * x
+        state = f * state + (1 - f) * x
 
         # Store the result of this row
         tl.store(
@@ -194,9 +194,8 @@ def mrnn_bwd_triton(
 
 class mRNNFunction(torch.autograd.Function):
     """
-    We can implement our own custom autograd Functions by subclassing
-    torch.autograd.Function and implementing the forward and backward passes
-    which operate on Tensors.
+    Wolfram:
+    derivative of f(x,z,w,s)=sigmoid(z+w*s)*s + (1-sigmoid(z+w*s)) * x
     """
 
     @staticmethod
@@ -225,37 +224,34 @@ class mRNNFunction(torch.autograd.Function):
         D = inputs.size(-1) // 2
         # Precompute certain values
         x, z = inputs.chunk(2, dim=-1)
+        states_minus_x = states - x
         logits = weight * states + z
-        exp_logits = torch.exp(-logits)
+        exp_logits = torch.exp(logits)
 
-        # sigs = torch.sigmoid(logits)
         sigs = 1 / (1 + exp_logits)
         sig_sqrds = sigs.pow(2)
-        x_exp_neg_logits = x * exp_logits
-        state_grad_pre = sig_sqrds * weight * x_exp_neg_logits + 1
-        return sigs, sig_sqrds, x_exp_neg_logits, state_grad_pre
+        state_grad_pre = sig_sqrds * exp_logits * \
+            (exp_logits + states_minus_x * weight + 1)
+        return state_grad_pre, (states, sigs, sig_sqrds, exp_logits, states_minus_x)
 
     @staticmethod
     @torch.jit.script
     def post_grad_components(
-        states,
         state_grad_pre,
         recurrent_grads,
-        sigs,
-        sig_sqrds,
-        x_exp_neg_logits
+        states, sigs, sig_sqrds, exp_logits, states_minus_x
     ):
         state_grad = state_grad_pre[:, 0] * recurrent_grads[:, 0]
-        z_grad = sig_sqrds * x_exp_neg_logits * recurrent_grads
+        x_grad = sigs * recurrent_grads
+        z_grad = sig_sqrds * exp_logits * states_minus_x * recurrent_grads
         inputs_grad = torch.cat((
             # Gradient of x
-            sigs * recurrent_grads,
+            x_grad,
             # Gradient of z
             z_grad
         ), dim=-1)
         # Gradient of v
         weight_grad = (z_grad * states).sum(dim=[0, 1])
-
         return inputs_grad, state_grad, weight_grad
 
     @staticmethod
@@ -276,7 +272,7 @@ class mRNNFunction(torch.autograd.Function):
         L = inputs.size(1)
         D = inputs.size(-1) // 2
 
-        sigs, sig_sqrds, x_exp_neg_logits, state_grad_pre = mRNNFunction.precompute_grad_components(
+        state_grad_pre, args = mRNNFunction.precompute_grad_components(
             inputs, states, weight
         )
 
@@ -296,12 +292,9 @@ class mRNNFunction(torch.autograd.Function):
         )
 
         return mRNNFunction.post_grad_components(
-            states,
             state_grad_pre,
             recurrent_grads,
-            sigs,
-            sig_sqrds,
-            x_exp_neg_logits
+            *args
         )
 
 

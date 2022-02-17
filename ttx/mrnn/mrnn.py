@@ -20,7 +20,7 @@ class mRNNCell(nn.Module):
         f = torch.sigmoid(
             input_forget + state * self.weight)
         # state = forget_gate * state + (1-forget_gate) * input
-        state = state + f * input
+        state = f * state + (1-f) * input
         return state
 
 
