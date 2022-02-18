@@ -297,18 +297,3 @@ class mRNNFunction(torch.autograd.Function):
             recurrent_grads,
             *args
         )
-
-
-class mRNN(nn.Module):
-    def __init__(self, hidden_size):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.weight = nn.Parameter(torch.randn(hidden_size))
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        torch.nn.init.normal_(self.weight.data)
-
-    def forward(self, x, state):
-        return mRNNFunction.apply(x, state, self.weight)
