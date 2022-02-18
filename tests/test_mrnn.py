@@ -21,7 +21,7 @@ class TestmRNN(unittest.TestCase):
                     ref_output = module(inputs, state)
 
                     triton_output = mRNNFunctionTriton.apply(
-                        inputs, state, module.cell.weight)
+                        inputs, module.cell.weight, state)
 
                     try:
                         assert torch.allclose(ref_output, triton_output, atol=1e-2, rtol=1e-1), (
@@ -58,7 +58,7 @@ class TestmRNN(unittest.TestCase):
                     module.cell.weight.grad = None
 
                     triton_output = mRNNFunctionTriton.apply(
-                        inputs, state, module.cell.weight)
+                        inputs, module.cell.weight, state)
                     triton_output.backward(grad)
                     state_grad, inputs_grad,  weight_grad = state.grad, inputs.grad, module.cell.weight.grad
 

@@ -200,7 +200,7 @@ class mRNNFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, inputs: torch.Tensor, state: torch.Tensor, weight: torch.Tensor):
+    def forward(ctx, inputs: torch.Tensor, weight: torch.Tensor, state: torch.Tensor):
         """
         In the forward pass we receive a Tensor containing the input and return
         a Tensor containing the output. ctx is a context object that can be used
@@ -253,7 +253,7 @@ class mRNNFunction(torch.autograd.Function):
         ), dim=-1)
         # Gradient of v
         weight_grad = (z_grad * states).sum(dim=[0, 1])
-        return inputs_grad, state_grad, weight_grad
+        return inputs_grad, weight_grad, state_grad
 
     @staticmethod
     def backward(ctx, grad_output):
