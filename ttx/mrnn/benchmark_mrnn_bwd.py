@@ -44,8 +44,11 @@ def benchmark(seq_len, provider):
             lambda: module(inputs, state).backward(grad))
 
     if provider == 'triton':
+        x, z = inputs.chunk(2, dim=-1)
+        x = x.detach().contiguous().requires_grad_()
+        z = z.detach().contiguous().requires_grad_()
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: mRNNFunction.apply(
-            inputs, state, module.cell.weight).backward(grad))
+            x, z,  module.cell.weight, state).backward(grad))
 
     if provider == 'sru':
         from sru import SRUCell
