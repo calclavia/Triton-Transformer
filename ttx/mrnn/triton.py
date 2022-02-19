@@ -8,19 +8,17 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+
 # @triton.autotune(configs=[
-#     triton.Config(meta={'BLOCK_SIZE': 32}, num_warps=2),
-#     triton.Config(meta={'BLOCK_SIZE': 128}, num_warps=4),
-#     triton.Config(meta={'BLOCK_SIZE': 512}, num_warps=6),
-#     triton.Config(meta={'BLOCK_SIZE': 1024}, num_warps=8),
+#     triton.Config(meta={'BLOCK_SIZE': 2**i}, num_warps=max(i // 2, 1))
+#     for i in range(4, 10, 2)
 # ],
 #     key=['dim']
 # )
-
-
 @triton.jit
 def mrnn_fwd_kernel(
-    x_ptr,  # [B, L, 2*D]
+    x_ptr,  # [B, L, D]
+    z_ptr,  # [B, L, D]
     state_ptr,  # [B, D]
     weight_ptr,  # [D] Transition matrix
     output_ptr,  # [B, L, D]
@@ -35,7 +33,7 @@ def mrnn_fwd_kernel(
 
     dim_offset = dim_id * BLOCK_SIZE
 
-    # Points to a single row
+    # Points to a sub dimension to operate on
     dim_ptrs = tl.arange(0, BLOCK_SIZE)
     vec_mask = dim_ptrs < dim
 
@@ -46,50 +44,50 @@ def mrnn_fwd_kernel(
     W = tl.load(weight_ptr + dim_offset + dim_ptrs, mask=vec_mask, other=0)
 
     # Offset by batch size and dim ID
-    x_pos = batch_id * length * (2*dim) + dim_offset
-    out_pos = batch_id * length * (dim) + dim_offset
+    pos = batch_id * length * dim + dim_offset
 
     for _ in range(0, length, 1):
         # Offset for a single row in x_ptr
-        x_offsets = x_pos + dim_ptrs
-        out_offsets = out_pos + dim_ptrs
+        offsets = pos + dim_ptrs
 
         # Load single row [D]
-        x = tl.load(x_ptr + x_offsets, mask=vec_mask, other=0)
-        x_f = tl.load(x_ptr + dim + x_offsets, mask=vec_mask, other=0)
+        x = tl.load(x_ptr + offsets, mask=vec_mask, other=0)
+        z = tl.load(z_ptr + offsets, mask=vec_mask, other=0)
 
         # Apply state transition
-        f = tl.sigmoid(x_f + state * W)
+        f = tl.sigmoid(z + state * W)
         state = f * state + (1 - f) * x
 
         # Store the result of this row
         tl.store(
-            output_ptr + out_offsets,
+            output_ptr + offsets,
             state,
             mask=vec_mask
         )
 
         # Move to next row
-        x_pos += dim*2
-        out_pos += dim
+        pos += dim
 
 
-def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Tensor):
-    assert inputs.is_contiguous()
+def mrnn_fwd_triton(
+        x: torch.Tensor,
+        z: torch.Tensor,
+        state: torch.Tensor,
+        weight: torch.Tensor):
+    assert x.is_contiguous()
+    assert z.is_contiguous()
     assert state.is_contiguous()
     assert weight.is_contiguous()
     # We need to preallocate the output
-    output = torch.empty((inputs.size(0), inputs.size(
-        1), inputs.size(2)//2), device=inputs.device)
-    assert inputs.is_cuda and state.is_cuda and output.is_cuda and weight.is_cuda
-    assert inputs.size(-1) == state.size(-1) * 2
+    output = torch.empty_like(x)
+    assert x.is_cuda and z.is_cuda and state.is_cuda and output.is_cuda and weight.is_cuda
+    assert x.size(-1) == state.size(-1)
     batch, length, dim = output.size()
     # print('Input dim', batch, length, dim, vdim)
 
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int]
-    # In this case, we use a 1D grid where the size is the number of blocks
-    def grid(meta): return (batch, math.ceil(dim / meta['BLOCK_SIZE']))
+    def grid(meta): return (batch, triton.cdiv(dim, meta['BLOCK_SIZE']))
     # NOTE:
     #  - each torch.tensor object is implicitly converted into a pointer to its first element.
     #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
@@ -98,7 +96,7 @@ def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Ten
     block_size = triton.next_power_of_2(dim)
     num_warps = min(max(block_size // 256, 1), 8)
     mrnn_fwd_kernel[grid](
-        inputs, state, weight, output, batch, length, dim,
+        x, z, state, weight, output, batch, length, dim,
         num_warps=num_warps,
         BLOCK_SIZE=block_size
     )
@@ -108,6 +106,12 @@ def mrnn_fwd_triton(inputs: torch.Tensor, state: torch.Tensor, weight: torch.Ten
     return output
 
 
+# @triton.autotune(configs=[
+#     triton.Config(meta={'BLOCK_SIZE': 2**i}, num_warps=max(i // 2, 1))
+#     for i in range(4, 10, 2)
+# ],
+#     key=['dim']
+# )
 @triton.jit
 def mrnn_bwd_kernel(
     grad_ptr,  # [B, L, D]
@@ -200,18 +204,18 @@ class mRNNFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, inputs: torch.Tensor, weight: torch.Tensor, state: torch.Tensor):
+    def forward(ctx, x: torch.Tensor, z: torch.Tensor, weight: torch.Tensor, state: torch.Tensor):
         """
         In the forward pass we receive a Tensor containing the input and return
         a Tensor containing the output. ctx is a context object that can be used
         to stash information for backward computation. You can cache arbitrary
         objects for use in the backward pass using the ctx.save_for_backward method.
         """
-        outputs = mrnn_fwd_triton(inputs, state, weight)
+        outputs = mrnn_fwd_triton(x, z, state, weight)
 
         # TODO: Storing all these states leads to O(b*l*d) memory
         ctx.save_for_backward(
-            inputs,
+            x, z,
             # All the states (except the final state)
             torch.cat((state.unsqueeze(1), outputs[:, :-1]), dim=1),
             weight
@@ -221,10 +225,9 @@ class mRNNFunction(torch.autograd.Function):
 
     @staticmethod
     @torch.jit.script
-    def precompute_grad_components(inputs, states, weight):
-        D = inputs.size(-1) // 2
+    def precompute_grad_components(x, z, states, weight):
+        D = x.size(-1)
         # Precompute certain values
-        x, z = inputs.chunk(2, dim=-1)
         states_minus_x = states - x
         logits = weight * states + z
         exp_logits = torch.exp(logits)
@@ -245,15 +248,9 @@ class mRNNFunction(torch.autograd.Function):
         state_grad = state_grad_pre[:, 0] * recurrent_grads[:, 0]
         x_grad = sigs * recurrent_grads
         z_grad = sig_sqrds * exp_logits * states_minus_x * recurrent_grads
-        inputs_grad = torch.cat((
-            # Gradient of x
-            x_grad,
-            # Gradient of z
-            z_grad
-        ), dim=-1)
         # Gradient of v
         weight_grad = (z_grad * states).sum(dim=[0, 1])
-        return inputs_grad, weight_grad, state_grad
+        return x_grad, z_grad, weight_grad, state_grad
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -262,19 +259,19 @@ class mRNNFunction(torch.autograd.Function):
         with respect to the output, and we need to compute the gradient of the loss
         with respect to the input.
         """
-        inputs, states, weight = ctx.saved_tensors
+        x, z, states, weight = ctx.saved_tensors
 
         """
         states: [B, L + 1 (first state is the initial state), D]
         weight: [D]
         grad: Gradient of loss w.r.t. state
         """
-        B = inputs.size(0)
-        L = inputs.size(1)
-        D = inputs.size(-1) // 2
+        B = x.size(0)
+        L = x.size(1)
+        D = x.size(-1) // 2
 
         state_grad_pre, args = mRNNFunction.precompute_grad_components(
-            inputs, states, weight
+            x, z, states, weight
         )
 
         # Torch version

@@ -7,38 +7,41 @@ from ttx.mrnn.triton import mRNNFunction as mRNNFunctionTriton
 
 
 class TestmRNN(unittest.TestCase):
-    def test_causal_product_fwd_triton(self):
+    def test_fwd_triton(self):
         torch.manual_seed(1)
         for bsz in range(1, 4):
             for dim in range(4, 128, 16):
                 for l in range(4, 32, 8):
-                    print('Testing:', bsz, l, dim)
-                    module = mRNN(dim).to('cuda')
+                    with torch.no_grad():
+                        print('Testing:', bsz, l, dim)
+                        module = mRNN(dim).to('cuda')
 
-                    inputs = torch.randn(bsz, l, dim * 2, device='cuda')
-                    state = torch.zeros(bsz, dim, device='cuda')
+                        inputs = torch.randn(bsz, l, dim * 2, device='cuda')
+                        state = torch.zeros(bsz, dim, device='cuda')
 
-                    ref_output = module(inputs, state)
+                        ref_output = module(inputs, state)
 
-                    triton_output = mRNNFunctionTriton.apply(
-                        inputs, module.cell.weight, state)
+                        x, z = inputs.chunk(2, dim=-1)
 
-                    try:
-                        assert torch.allclose(ref_output, triton_output, atol=1e-2, rtol=1e-1), (
-                            f'The maximum difference between ref and triton is '
-                            f'{torch.max(torch.abs(ref_output - triton_output))}'
-                        )
-                    except Exception as e:
-                        print('ref_output', ref_output)
-                        print('triton_output', triton_output)
-                        raise e
+                        triton_output = mRNNFunctionTriton.apply(
+                            x.contiguous(), z.contiguous(), module.cell.weight, state)
 
-    def test_causal_product_bwd_triton(self):
+                        try:
+                            assert torch.allclose(ref_output, triton_output, atol=1e-2, rtol=1e-1), (
+                                f'The maximum difference between ref and triton is '
+                                f'{torch.max(torch.abs(ref_output - triton_output))}'
+                            )
+                        except Exception as e:
+                            print('ref_output', ref_output)
+                            print('triton_output', triton_output)
+                            raise e
+
+    def test_bwd_triton(self):
         torch.manual_seed(10)
         for bsz in range(1, 4):
             for dim in range(4, 128, 16):
                 for l in range(4, 32, 8):
-                    print('test_causal_product_bwd_torch testing:', bsz, l, dim)
+                    print('test_bwd_triton testing:', bsz, l, dim)
                     module = mRNN(dim).to('cuda')
 
                     inputs = torch.randn(
@@ -57,10 +60,15 @@ class TestmRNN(unittest.TestCase):
                     state.grad = None
                     module.cell.weight.grad = None
 
+                    x, z = inputs.chunk(2, dim=-1)
+                    x = x.detach().contiguous().requires_grad_()
+                    z = z.detach().contiguous().requires_grad_()
+
                     triton_output = mRNNFunctionTriton.apply(
-                        inputs, module.cell.weight, state)
+                        x, z, module.cell.weight, state)
                     triton_output.backward(grad)
-                    state_grad, inputs_grad,  weight_grad = state.grad, inputs.grad, module.cell.weight.grad
+                    state_grad, weight_grad = state.grad, module.cell.weight.grad
+                    inputs_grad = torch.cat((x.grad, z.grad), dim=-1)
 
                     try:
                         assert torch.allclose(
