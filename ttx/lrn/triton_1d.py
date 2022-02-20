@@ -6,12 +6,12 @@ import triton
 import torch
 
 
-@triton.autotune(configs=[
-    triton.Config({'BLOCK_SIZE': 2**i}, num_warps=max(i // 2, 1))
-    for i in range(4, 10, 2)
-],
-    key=['dim']
-)
+# @triton.autotune(configs=[
+#     triton.Config({'BLOCK_SIZE': 2**i}, num_warps=max(i // 2, 1))
+#     for i in range(4, 10, 2)
+# ],
+#     key=['dim']
+# )
 @triton.jit
 def lrn_1d_kernel(
     x_ptr,  # [B, L, D]
@@ -88,12 +88,12 @@ def lrn_fwd_triton_1d(
     #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
     #  - don't forget to pass meta-parameters as keywords arguments
     # print('launched kernel...')
-    # block_size = triton.next_power_of_2(dim)
-    # num_warps = min(max(block_size // 256, 1), 8)
+    block_size = triton.next_power_of_2(dim)
+    num_warps = min(max(block_size // 256, 1), 8)
     lrn_1d_kernel[grid](
         x, z, state, output, batch, length, dim,
-        # num_warps=num_warps,
-        # BLOCK_SIZE=block_size
+        num_warps=num_warps,
+        BLOCK_SIZE=block_size
     )
     return output
 
