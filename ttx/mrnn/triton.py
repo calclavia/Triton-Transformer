@@ -23,10 +23,8 @@ def mrnn_fwd_kernel(
     weight_ptr,  # [D] Transition matrix
     output_ptr,  # [B, L, D]
     batch, length, dim,  # Size of the tensor dimensions
-    ** meta,  # Optional meta-parameters for the kernel
+    BLOCK_SIZE: tl.constexpr,  # Optional meta-parameters for the kernel
 ):
-    # Size of dimensions to work with
-    BLOCK_SIZE = meta['BLOCK_SIZE']
 
     batch_id = tl.program_id(axis=0)
     dim_id = tl.program_id(axis=1)
@@ -118,11 +116,8 @@ def mrnn_bwd_kernel(
     state_grad_pre_ptr,  # [B, L, D]
     output_ptr,  # [B, L, D]
     batch, length, dim,  # Size of the tensor dimensions
-    ** meta,  # Optional meta-parameters for the kernel
+    BLOCK_SIZE: tl.constexpr,  # Optional meta-parameters for the kernel
 ):
-    # Size of dimensions to work with
-    BLOCK_SIZE = meta['BLOCK_SIZE']
-
     batch_id = tl.program_id(axis=0)
     dim_id = tl.program_id(axis=1)
 

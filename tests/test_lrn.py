@@ -6,6 +6,8 @@ from ttx.lrn.torch import lrn_torch, lrn_torch_1d
 from ttx.lrn.triton import lrn_fwd_triton
 from ttx.lrn.triton_1d import LRN1DFunction
 
+from ttx.mrnn.triton import mRNNFunction as mRNNFunctionTriton
+
 
 class TestLRN(unittest.TestCase):
     def test_triton_1d(self):
@@ -22,7 +24,11 @@ class TestLRN(unittest.TestCase):
                     state = torch.randn(
                         bsz, dim, device='cuda', requires_grad=True)
 
-                    input_vars = (x, z, state)
+                    input_vars = ((1-torch.sigmoid(z))*x,
+                                  torch.sigmoid(z), state)
+                    input_vars = tuple(v.detach() for v in input_vars)
+                    for v in input_vars:
+                        v.requires_grad_()
 
                     ref_output = lrn_torch_1d(*input_vars)
                     grad = torch.randn_like(ref_output)
@@ -47,6 +53,23 @@ class TestLRN(unittest.TestCase):
                         print('ref_output', ref_output)
                         print('triton_output', triton_output)
                         raise e
+
+                    # Double check to ensure we match mRNN
+                    with torch.no_grad():
+                        try:
+                            triton_output = mRNNFunctionTriton.apply(
+                                x.detach(),
+                                z.detach(),
+                                torch.zeros(dim, device='cuda'), input_vars[2].detach())
+                            assert torch.allclose(ref_output,
+                                                  triton_output, atol=1e-2, rtol=1e-1), (
+                                f'The maximum difference between ref and triton is '
+                                f'{torch.max(torch.abs(ref_output - triton_output))}'
+                            )
+                        except Exception as e:
+                            print('ref_output', ref_output)
+                            print('triton_output', triton_output)
+                            raise e
 
                     for ref, out in zip(ref_grads, triton_grads):
                         try:
