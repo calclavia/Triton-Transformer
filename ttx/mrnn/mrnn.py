@@ -16,10 +16,8 @@ class mRNNCell(nn.Module):
     def forward(self, input, input_forget, state):
         # type: (Tensor, Tensor, Tensor) -> Tensor
 
-        # For matmul version: torch.mm(state, self.weight.t())
         f = torch.sigmoid(
             input_forget + state * self.weight)
-        # state = forget_gate * state + (1-forget_gate) * input
         state = f * state + (1-f) * input
         return state
 
