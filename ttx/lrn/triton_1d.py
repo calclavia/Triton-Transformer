@@ -98,10 +98,91 @@ def lrn_fwd_triton_1d(
     return output
 
 
+@triton.jit
+def lrn_bwd_kernel(
+    grad_ptr,  # [B, L, D]
+    state_grad_pre_ptr,  # [B, L, D]
+    output_ptr,  # [B, L, D]
+    batch, length, dim,  # Size of the tensor dimensions
+    BLOCK_SIZE: tl.constexpr,  # Optional meta-parameters for the kernel
+):
+    batch_id = tl.program_id(axis=0)
+    dim_id = tl.program_id(axis=1)
+
+    dim_offset = dim_id * BLOCK_SIZE
+
+    # Points to a single row
+    dim_ptrs = tl.arange(0, BLOCK_SIZE)
+    vec_mask = dim_ptrs < dim
+
+    # D state gradient accumlator
+    state_grad = tl.zeros((BLOCK_SIZE,), dtype=tl.float16)
+
+    # Offset by batch size and dim ID (start at last time step)
+    pos = batch_id * length * dim + length * dim + dim_offset
+
+    for _ in range(0, length, 1):
+        # Move to prev time step
+        pos -= dim
+
+        # Offset for a single row in x_ptr
+        offsets = pos + dim_ptrs
+
+        # Load single row [D]
+        grad_t = tl.load(grad_ptr + offsets, mask=vec_mask,
+                         other=0).to(tl.float16)
+        state_grad_pre_t = tl.load(
+            state_grad_pre_ptr + offsets, mask=vec_mask, other=0).to(tl.float16)
+
+        # Compute gradient
+        output = grad_t + state_grad
+        state_grad = state_grad_pre_t * output
+
+        # Store the result of this row
+        tl.store(
+            output_ptr + offsets,
+            output,
+            mask=vec_mask
+        )
+
+
+def lrn_bwd_triton(
+    grad: torch.Tensor,
+    state_grad_pre: torch.Tensor,
+):
+    batch, length, dim = grad.size()
+    assert grad.size() == state_grad_pre.size()
+    assert grad.is_contiguous()
+    assert state_grad_pre.is_contiguous()
+
+    # We need to preallocate the output
+    output = torch.empty((batch, length, dim),
+                         device=grad.device, dtype=torch.half)
+
+    # The SPMD launch grid denotes the number of kernel instances that run in parallel.
+    # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int]
+    # In this case, we use a 1D grid where the size is the number of blocks
+    def grid(meta): return (batch, math.ceil(dim / meta['BLOCK_SIZE']))
+    # NOTE:
+    #  - each torch.tensor object is implicitly converted into a pointer to its first element.
+    #  - `triton.jit`'ed functions can be index with a launch grid to obtain a callable GPU kernel
+    #  - don't forget to pass meta-parameters as keywords arguments
+
+    block_size = triton.next_power_of_2(dim)
+    num_warps = min(max(block_size // 256, 1), 8)
+    lrn_bwd_kernel[grid](
+        grad, state_grad_pre, output,
+        batch, length, dim,
+        num_warps=num_warps,
+        BLOCK_SIZE=block_size
+    )
+    return output
+
+
 class LRN1DFunction(torch.autograd.Function):
     """
     Wolfram:
-    derivative of f(x,z,w,s)=sigmoid(z+w*s)*s + (1-sigmoid(z+w*s)) * x
+    derivative of f(x,z,s)=s*z+x
     """
 
     @staticmethod
@@ -117,7 +198,7 @@ class LRN1DFunction(torch.autograd.Function):
         ctx.save_for_backward(
             x, z,
             # All the states (except the final state)
-            torch.cat((state.unsqueeze(1), outputs[:, :-1]), dim=1)
+            torch.cat((state.unsqueeze(1), outputs[:, :-1]), dim=1),
         )
 
         return outputs
@@ -130,4 +211,12 @@ class LRN1DFunction(torch.autograd.Function):
         with respect to the input.
         """
         x, z, states = ctx.saved_tensors
-        return grad_output, states * grad_output, z[:, 0] * grad_output[:, 0]
+
+        B, L, D = x.size()
+
+        recurrent_grads = lrn_bwd_triton(
+            grad_output.contiguous(),
+            z,
+        )
+
+        return recurrent_grads, states * recurrent_grads, z[:, 0] * recurrent_grads[:, 0]

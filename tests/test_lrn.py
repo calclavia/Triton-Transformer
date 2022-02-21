@@ -15,12 +15,12 @@ class TestLRN(unittest.TestCase):
 
         for bsz in range(1, 16, 4):
             for seqlen in range(1, 16, 4):
-                for dim in range(1, 16, 4):
+                for dim in range(1, 512, 128):
                     print('test_triton_1d', bsz, seqlen, dim)
                     x = torch.randn(bsz, seqlen, dim,
-                                    device='cuda', requires_grad=True)
+                                    device='cuda')
                     z = torch.randn(bsz, seqlen, dim,
-                                    device='cuda', requires_grad=True)
+                                    device='cuda')
                     state = torch.randn(
                         bsz, dim, device='cuda', requires_grad=True)
 
@@ -34,7 +34,7 @@ class TestLRN(unittest.TestCase):
                     grad = torch.randn_like(ref_output)
                     ref_output.backward(grad)
 
-                    ref_grads = (v.grad for v in input_vars)
+                    ref_grads = tuple(v.grad for v in input_vars)
 
                     # Clear grad
                     for v in input_vars:
@@ -42,7 +42,9 @@ class TestLRN(unittest.TestCase):
 
                     triton_output = LRN1DFunction.apply(*input_vars)
                     triton_output.backward(grad)
-                    triton_grads = (v.grad for v in input_vars)
+                    triton_grads = tuple(v.grad for v in input_vars)
+
+                    assert len(ref_grads) == len(triton_grads)
 
                     try:
                         assert torch.allclose(ref_output, triton_output, atol=1e-2, rtol=1e-1), (
@@ -71,15 +73,15 @@ class TestLRN(unittest.TestCase):
                             print('triton_output', triton_output)
                             raise e
 
-                    for ref, out in zip(ref_grads, triton_grads):
+                    for i, (ref, out) in enumerate(zip(ref_grads, triton_grads)):
                         try:
                             assert torch.allclose(ref, out, atol=1e-2, rtol=1e-1), (
                                 f'The maximum difference between ref and out is '
                                 f'{torch.max(torch.abs(ref - out))}'
                             )
                         except Exception as e:
-                            print('ref grad', ref)
-                            print('out grad', out)
+                            print(f'ref grad {i} {ref}')
+                            print(f'out grad {i} {out}')
                             raise e
 
     def test_triton(self):
