@@ -3,7 +3,7 @@ import unittest
 import torch
 import torch.nn.functional as F
 from ttx.lrn.torch import lrn_torch, lrn_torch_1d
-from ttx.lrn.triton import lrn_fwd_triton
+from ttx.lrn.triton_2d import lrn_fwd_triton
 from ttx.lrn.triton_1d import LRN1DFunction
 
 from ttx.mrnn.triton import mRNNFunction as mRNNFunctionTriton
@@ -57,6 +57,7 @@ class TestLRN(unittest.TestCase):
                         raise e
 
                     # Double check to ensure we match mRNN
+                    '''
                     with torch.no_grad():
                         try:
                             triton_output = mRNNFunctionTriton.apply(
@@ -72,7 +73,7 @@ class TestLRN(unittest.TestCase):
                             print('ref_output', ref_output)
                             print('triton_output', triton_output)
                             raise e
-
+                    '''
                     for i, (ref, out) in enumerate(zip(ref_grads, triton_grads)):
                         try:
                             assert torch.allclose(ref, out, atol=1e-2, rtol=1e-1), (
@@ -84,7 +85,7 @@ class TestLRN(unittest.TestCase):
                             print(f'out grad {i} {out}')
                             raise e
 
-    def test_triton(self):
+    def test_triton_2d(self):
         torch.manual_seed(1)
         bsz = 1
         seqlen = 4
