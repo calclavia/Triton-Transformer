@@ -1,19 +1,20 @@
 import math
 
-import torch
 import triton
 import triton.language as tl
+
+import torch
 
 
 @triton.jit
 def lrn_kernel(
     q_ptr,  # [B, L, K]
     k_ptr,
-    v_ptr,  # [B, L, D]
+    v_ptr,  # [B, L, V]
     z1_ptr,
     z2_ptr,
-    state_ptr,  # [B, D, K]
-    output_ptr,  # *Pointer* to output vector
+    state_ptr,  # [B, V, K]
+    output_ptr,  # [B, L, V]
     batch, length, kdim, vdim,  # Size of the tensor dimensions
     K_BLOCK_SIZE: tl.constexpr,
     V_BLOCK_SIZE: tl.constexpr,
@@ -23,17 +24,18 @@ def lrn_kernel(
 
     pid = tl.program_id(axis=0)
 
-    # Offset by batch size
-    k_offset = pid * length * kdim
-    v_offset = pid * length * vdim
-
-    # Load state [D, K] for this batch
+    # TODO: Pass in accumulator
+    # Load state [V_BLOCK_SIZE, K_BLOCK_SIZE] for this batch
     state_offset = pid * kdim * vdim
-    state_idx_ptrs = tl.arange(0, V_BLOCK_SIZE * K_BLOCK_SIZE)
-    state = tl.reshape(tl.load(
-        state_ptr + state_offset + state_idx_ptrs,
-        mask=state_idx_ptrs < (kdim*vdim), other=0
-    ), [V_BLOCK_SIZE, K_BLOCK_SIZE])
+    # state_v_offsets = tl.arange(0, V_BLOCK_SIZE)[:, None]
+    # state_k_offsets = tl.arange(0, K_BLOCK_SIZE)[:, None]
+    # state = tl.load(
+    #     state_ptr + state_offset +
+    #     state_v_offsets +
+    #     state_k_offsets,
+    #     mask=state_v_offsets < vdim & state_k_offsets < kdim, other=0
+    # )
+    state = tl.zeros((V_BLOCK_SIZE, K_BLOCK_SIZE), dtype=tl.float32)
 
     # Points to a single row
     kdim_ptrs = tl.arange(0, K_BLOCK_SIZE)
@@ -41,37 +43,43 @@ def lrn_kernel(
     k_mask = kdim_ptrs < kdim
     v_mask = kdim_ptrs < vdim
 
+    # Offset for a single row in Q, K, V
+    # Offset by batch size, seq len
+    k_offsets = pid * length * kdim + kdim_ptrs
+    v_offsets = pid * length * vdim + vdim_ptrs
+
     for _ in range(0, length, 1):
-        # Offset for a single row in Q, K, V
-        k_offsets = k_offset + kdim_ptrs
-        v_offsets = v_offset + vdim_ptrs
 
         # Load a single row of K and V as matrices.
-        # [M]
-        k = tl.load(k_ptr + k_offsets, mask=k_mask, other=0)
-        # [D]
-        # v = tl.load(v_ptr + v_offsets, mask=v_mask, other=0)
+        # [K_BLOCK_SIZE, 1]
+        k = tl.load(k_ptr + k_offsets,
+                    mask=k_mask, other=0)[:, None]
+        # [1, V_BLOCK_SIZE]
+        v = tl.load(v_ptr + v_offsets, mask=v_mask, other=0)[None, :]
 
-        # Compute context [D, 1] x [1, K] => [D, K]
-        # context = tl.dot(v[:, None], k[None, :])
-        # state += context
+        # Compute context [V, 1] x [1, K] => [V, K]
+        context = tl.dot(v, k)
+        state += context
 
-        # Load a single row of Q of shape [D]
-        # q = tl.load(q_ptr + k_offsets, mask=k_mask, other=0)
+        # Load a single row of Q of shape [K, 1]
+        # TODO: Loading this causes segfault
+        # q = tl.load(q_ptr + k_offsets[:, None], mask=k_mask[:, None], other=0)
 
-        # Compute output = QKV. [D, K] x [K, 1] x  => [D, 1]
-        # output = tl.reshape(tl.dot(state, q[:, None]), [V_BLOCK_SIZE])
-        output = tl.reshape(tl.dot(state, k[:, None]), [V_BLOCK_SIZE])
-        # Store the result of this row
+        # Compute output = S * Q. [V, K] x [K, 1] x  => [D, 1]
+        # TODO: Correct equation
+        # output = tl.dot(state, q)
+        output = tl.dot(state, k)
+
+        # TODO: Storing output causes IndexError: map::at
         tl.store(
-            output_ptr + v_offsets,
+            output_ptr + v_offsets[:, None],
             output,
-            mask=v_mask
+            mask=v_mask[:, None]
         )
 
         # Move to next row
-        k_offset += kdim
-        v_offset += vdim
+        k_offsets += kdim
+        v_offsets += vdim
 
 
 def lrn_fwd_triton(
@@ -99,6 +107,7 @@ def lrn_fwd_triton(
 
     kdim = k.size(-1)
     batch, length, vdim = output.size()
+    print(batch, length, kdim, vdim)
 
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int]

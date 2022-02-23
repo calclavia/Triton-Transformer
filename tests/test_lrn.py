@@ -88,10 +88,10 @@ class TestLRN(unittest.TestCase):
     def test_triton_2d(self):
         torch.manual_seed(1)
         bsz = 1
-        seqlen = 4
+        seqlen = 2
         kdim = 4
-        vdim = 4
-
+        vdim = 2
+        print(bsz, seqlen, kdim, vdim)
         q = torch.randn(bsz, seqlen, kdim, device='cuda')
         k = torch.randn(bsz, seqlen, kdim, device='cuda')
         v = torch.randn(bsz, seqlen, vdim, device='cuda')
